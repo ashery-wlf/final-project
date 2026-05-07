@@ -492,13 +492,30 @@ function eventEndDateTime($event)
 function attendanceStartDateTime($event)
 {
     $start = !empty($event['attendance_start']) ? $event['attendance_start'] : $event['time'];
-    return strtotime($event['date'] . ' ' . $start);
+    $dateTime = $event['date'] . ' ' . $start;
+    $timestamp = strtotime($dateTime);
+    
+    // If the timestamp is false (invalid date/time), use event time as fallback
+    if ($timestamp === false) {
+        $timestamp = strtotime($event['date'] . ' ' . $event['time']);
+    }
+    
+    return $timestamp;
 }
 
 function attendanceEndDateTime($event)
 {
     $end = !empty($event['attendance_end']) ? $event['attendance_end'] : (!empty($event['end_time']) ? $event['end_time'] : $event['time']);
-    return strtotime($event['date'] . ' ' . $end);
+    $dateTime = $event['date'] . ' ' . $end;
+    $timestamp = strtotime($dateTime);
+    
+    // If the timestamp is false (invalid date/time), use event end time as fallback
+    if ($timestamp === false) {
+        $endFallback = !empty($event['end_time']) ? $event['end_time'] : $event['time'];
+        $timestamp = strtotime($event['date'] . ' ' . $endFallback);
+    }
+    
+    return $timestamp;
 }
 
 function attendanceWindowState($event)
@@ -506,6 +523,23 @@ function attendanceWindowState($event)
     $now = time();
     $start = attendanceStartDateTime($event);
     $end = attendanceEndDateTime($event);
+
+    // Debug logging (can be removed in production)
+    error_log("Attendance Window Debug: Now=" . date('Y-m-d H:i:s', $now) . 
+              ", Start=" . date('Y-m-d H:i:s', $start) . 
+              ", End=" . date('Y-m-d H:i:s', $end));
+
+    // If start or end times are invalid, use event time as fallback
+    if ($start === false || $end === false) {
+        $eventTime = strtotime($event['date'] . ' ' . $event['time']);
+        if ($start === false) $start = $eventTime;
+        if ($end === false) $end = $eventTime;
+    }
+
+    // Ensure end time is after start time
+    if ($end < $start) {
+        $end = $start + 3600; // Add 1 hour if end is before start
+    }
 
     if ($now < $start) {
         return 'before';
@@ -579,7 +613,24 @@ function registerUserToEvent($conn, $userId, $eventId)
         $name = $conn->real_escape_string($user['name'] ?? '');
         $email = $conn->real_escape_string($user['email'] ?? '');
         $phone = $conn->real_escape_string($user['phone'] ?? '');
-        $conn->query("INSERT INTO participants(user_id, event_id, participant_name, participant_email, participant_phone, invite_status) VALUES($userId, $eventId, '$name', '$email', '$phone', 'registered')");
+        
+        // Get event details
+        $eventResult = $conn->query("SELECT name, access_code, registration_mode FROM events WHERE id=$eventId LIMIT 1");
+        $event = $eventResult ? $eventResult->fetch_assoc() : null;
+        
+        // Generate access code for this user if event requires it
+        $userAccessCode = '';
+        if ($event && $event['registration_mode'] === 'code') {
+            $userAccessCode = generateAccessCode();
+        }
+        
+        // Insert participant with access code
+        $conn->query("INSERT INTO participants(user_id, event_id, participant_name, participant_email, participant_phone, invite_status, access_code) VALUES($userId, $eventId, '$name', '$email', '$phone', 'registered', '$userAccessCode')");
+        
+        // Send access code email if event requires code
+        if ($event && $event['registration_mode'] === 'code' && !empty($user['email']) && !empty($userAccessCode)) {
+            sendEventAccessCodeEmail($user['name'], $user['email'], $event, $userAccessCode);
+        }
     }
 }
 
@@ -669,7 +720,7 @@ function renderAppShellStart($conn, $options = [])
     $pageActions = $options['page_actions'] ?? '';
     $extraHead = $options['extra_head'] ?? '';
     $showPageHead = $options['show_page_head'] ?? true;
-    $attendanceLink = appPrimaryEventLink($conn, $userId, 'attendance.php');
+    $attendanceLink = 'attendance.php';
     $qrLink = appPrimaryEventLink($conn, $userId, 'generate-qr.php');
     $GLOBALS['app_mobile_attendance_link'] = $attendanceLink;
     $GLOBALS['app_mobile_qr_link'] = $qrLink;
@@ -713,20 +764,20 @@ function renderAppShellStart($conn, $options = [])
     --text:#0f172a;
     --muted:#707a8f;
     --blue:#2563ff;
-    --shadow:0 20px 45px rgba(15, 23, 42, 0.08);
+    --shadow:0 20px 45px rgba(42, 15, 15, 0.08);
 }
 *{box-sizing:border-box;}
 body{
     margin:0;
-    background:radial-gradient(circle at top left, rgba(37,99,255,0.10), transparent 28%), linear-gradient(180deg, #eef2f9 0%, #f7f9fd 100%);
+    background:radial-gradient(circle at top left, rgba(255, 37, 37, 0.1), transparent 28%), linear-gradient(180deg, #eef2f9 0%, #f7f9fd 100%);
     color:var(--text);
     font-family:"Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
 }
 a{color:inherit;text-decoration:none;}
 .app-layout{height:100vh;display:flex;overflow:hidden;}
 .app-sidebar{
-    width:248px;background:linear-gradient(180deg, #092055 0%, #07173e 100%);color:#fff;padding:18px 14px;display:flex;flex-direction:column;gap:18px;
-    box-shadow:24px 0 40px rgba(7, 23, 62, 0.16);
+    width:248px;background:linear-gradient(180deg, #291e1e 0%, #1b0f0f 100%);color:#fff;padding:18px 14px;display:flex;flex-direction:column;gap:18px;
+    box-shadow:24px 0 40px rgba(37, 9, 9, 0.16);
     overflow:hidden;
     flex-shrink:0;
     transition:all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
@@ -749,7 +800,7 @@ a{color:inherit;text-decoration:none;}
 .app-menu{display:flex;flex-direction:column;gap:4px;}
 .app-menu-link{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:10px;font-size:14px;color:rgba(255,255,255,0.92);}
 .app-menu-link:hover{background:rgba(255,255,255,0.08);}
-.app-menu-link.active{background:linear-gradient(180deg, #2470ff 0%, #1558da 100%);box-shadow:0 12px 22px rgba(36,112,255,0.35);}
+.app-menu-link.active{background:linear-gradient(180deg, #3a0909 0%, #da1515 100%);box-shadow:0 12px 22px rgba(255, 36, 36, 0.35);}
 .app-sidebar-footer{margin-top:auto;padding-top:14px;border-top:1px solid rgba(255,255,255,0.12);display:flex;flex-direction:column;gap:8px;}
 .app-profile{display:flex;align-items:center;gap:12px;padding:12px 10px;border-radius:14px;background:rgba(255,255,255,0.04);}
 .app-profile-main{display:flex;align-items:center;gap:12px;flex:1;min-width:0;color:inherit;text-decoration:none;transition:background 0.2s;border-radius:10px;padding:4px;}
@@ -778,14 +829,14 @@ text-decoration:none;
 .app-topbar-brand img{width:34px;height:34px;object-fit:contain;}
 .app-topbar-brand span{font-size:13px;line-height:1.05;letter-spacing:0.04em;}
 .app-topbar-content{display:flex;align-items:center;gap:12px;flex:1;justify-content:flex-end;}
-.app-topbar-profile{width:42px;height:42px;border-radius:50%;border:1px solid #dbe4f0;background:#fff;display:none;align-items:center;justify-content:center;padding:0;overflow:hidden;color:#334155;box-shadow:0 8px 18px rgba(15,23,42,0.08);}
+.app-topbar-profile{width:42px;height:42px;border-radius:50%;border:1px solid #dbe4f0;background:#fff;display:none;align-items:center;justify-content:center;padding:0;overflow:hidden;color:#334155;box-shadow:0 8px 18px rgba(42, 15, 15, 0.08);}
 .app-topbar-profile .app-avatar{width:100%;height:100%;font-size:12px;}
 .app-topbar-desktop{display:flex;align-items:center;gap:12px;}
 .app-inline-flash{margin:0 0 16px;border-radius:14px;padding:12px 14px;font-size:14px;font-weight:700;}
 .app-inline-flash.success{background:#e8f7ee;color:#166534;border:1px solid #ccebd7;}
 .app-inline-flash.error{background:#fff1f2;color:#be123c;border:1px solid #fecdd3;}
-.app-profile-drawer-backdrop{position:fixed;inset:0;background:rgba(15,23,42,0.45);opacity:0;pointer-events:none;transition:opacity 0.25s ease;z-index:80;}
-.app-profile-drawer{position:fixed;top:0;right:0;width:min(420px, 100vw);height:100vh;background:#fff;box-shadow:-24px 0 48px rgba(15,23,42,0.16);transform:translateX(100%);transition:transform 0.25s ease;z-index:81;display:flex;flex-direction:column;}
+.app-profile-drawer-backdrop{position:fixed;inset:0;background:rgba(42, 15, 15, 0.45);opacity:0;pointer-events:none;transition:opacity 0.25s ease;z-index:80;}
+.app-profile-drawer{position:fixed;top:0;right:0;width:min(420px, 100vw);height:100vh;background:#fff;box-shadow:-24px 0 48px rgba(42, 15, 15, 0.16);transform:translateX(100%);transition:transform 0.25s ease;z-index:81;display:flex;flex-direction:column;}
 .app-profile-open .app-profile-drawer-backdrop{opacity:1;pointer-events:auto;}
 .app-profile-open .app-profile-drawer{transform:translateX(0);}
 .app-drawer-head{display:flex;align-items:center;justify-content:space-between;padding:18px 18px 14px;border-bottom:1px solid #e7edf7;}
@@ -843,7 +894,7 @@ text-decoration:none;
         background:rgba(255,255,255,0.96);
         border:1px solid #dfe6f2;
         border-radius:18px;
-        box-shadow:0 16px 34px rgba(15, 23, 42, 0.12);
+        box-shadow:0 16px 34px rgba(42, 15, 15, 0.12);
         backdrop-filter:blur(12px);
         z-index:50;
         transition:all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
@@ -879,7 +930,6 @@ text-decoration:none;
         <a href="create-event.php" class="app-menu-link ' . ($active === 'create-event' ? 'active' : '') . '">' . appIcon('create') . '<span>Create Event</span></a>
         <a href="' . h($attendanceLink) . '" class="app-menu-link ' . ($active === 'attendance' ? 'active' : '') . '">' . appIcon('attendance') . '<span>Attendance</span></a>
         <a href="' . h($qrLink) . '" class="app-menu-link ' . ($active === 'qr' ? 'active' : '') . '">' . appIcon('codes') . '<span>Live QR</span></a>
-        <a href="report.php" class="app-menu-link ' . ($active === 'report' ? 'active' : '') . '">' . appIcon('codes') . '<span>Reports</span></a>
     </nav>
     <div class="app-sidebar-footer">
         <div class="app-profile">
