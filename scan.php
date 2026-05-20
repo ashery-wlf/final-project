@@ -7,7 +7,7 @@ ensureEventSchema($conn);
 
 $user_id = (int) $_SESSION['user_id'];
 $event_id = isset($_GET['id']) ? (int) $_GET['id'] : 0;
-$event = $conn->query("SELECT * FROM events WHERE id=$event_id LIMIT 1")->fetch_assoc();
+$event = $conn->query("SELECT * FROM events WHERE id=$event_id AND deleted = FALSE LIMIT 1")->fetch_assoc();
 
 if (!$event) {
     die("Event not found.");
@@ -193,12 +193,27 @@ function getDeviceInfo() {
     let browser = "Unknown";
     let deviceType = "Desktop";
     
-    // Detect browser
-    if (userAgent.indexOf("Chrome") > -1) browser = "Chrome";
-    else if (userAgent.indexOf("Safari") > -1) browser = "Safari";
-    else if (userAgent.indexOf("Firefox") > -1) browser = "Firefox";
-    else if (userAgent.indexOf("Edge") > -1) browser = "Edge";
-    else if (userAgent.indexOf("Opera") > -1) browser = "Opera";
+    // Detect browser with version
+    if (userAgent.indexOf("Chrome") > -1) {
+        const match = userAgent.match(/Chrome\/(\d+)/);
+        browser = "Chrome" + (match ? " " + match[1] : "");
+    }
+    else if (userAgent.indexOf("Safari") > -1) {
+        const match = userAgent.match(/Version\/(\d+)/);
+        browser = "Safari" + (match ? " " + match[1] : "");
+    }
+    else if (userAgent.indexOf("Firefox") > -1) {
+        const match = userAgent.match(/Firefox\/(\d+)/);
+        browser = "Firefox" + (match ? " " + match[1] : "");
+    }
+    else if (userAgent.indexOf("Edge") > -1) {
+        const match = userAgent.match(/Edge\/(\d+)/);
+        browser = "Edge" + (match ? " " + match[1] : "");
+    }
+    else if (userAgent.indexOf("Opera") > -1) {
+        const match = userAgent.match(/Opera\/(\d+)/);
+        browser = "Opera" + (match ? " " + match[1] : "");
+    }
     
     // Detect device type
     if (/Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(userAgent)) {
@@ -213,8 +228,83 @@ function getDeviceInfo() {
         screen_resolution: screen.width + "x" + screen.height,
         platform: navigator.platform,
         language: navigator.language,
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        cookies_enabled: navigator.cookieEnabled,
+        online_status: navigator.onLine,
+        java_enabled: navigator.javaEnabled(),
+        do_not_track: navigator.doNotTrack
     };
+}
+
+function getBrowserInfo() {
+    const userAgent = navigator.userAgent;
+    const browserInfo = {
+        name: "Unknown",
+        version: "Unknown",
+        engine: "Unknown",
+        platform: navigator.platform,
+        language: navigator.language,
+        languages: navigator.languages,
+        cookie_enabled: navigator.cookieEnabled,
+        on_line: navigator.onLine,
+        java_enabled: navigator.javaEnabled(),
+        do_not_track: navigator.doNotTrack,
+        screen: {
+            width: screen.width,
+            height: screen.height,
+            avail_width: screen.availWidth,
+            avail_height: screen.availHeight,
+            color_depth: screen.colorDepth,
+            pixel_depth: screen.pixelDepth
+        },
+        window: {
+            inner_width: window.innerWidth,
+            inner_height: window.innerHeight,
+            outer_width: window.outerWidth,
+            outer_height: window.outerHeight
+        },
+        device_memory: navigator.deviceMemory || "Unknown",
+        hardware_concurrency: navigator.hardwareConcurrency || "Unknown",
+        connection: navigator.connection ? {
+            effective_type: navigator.connection.effectiveType,
+            downlink: navigator.connection.downlink,
+            rtt: navigator.connection.rtt
+        } : "Unknown"
+    };
+    
+    // Detailed browser detection
+    if (userAgent.indexOf("Chrome") > -1 && userAgent.indexOf("Edg") === -1) {
+        const match = userAgent.match(/Chrome\/(\d+\.\d+)/);
+        browserInfo.name = "Chrome";
+        browserInfo.version = match ? match[1] : "Unknown";
+        browserInfo.engine = "Blink";
+    }
+    else if (userAgent.indexOf("Safari") > -1 && userAgent.indexOf("Chrome") === -1) {
+        const match = userAgent.match(/Version\/(\d+\.\d+)/);
+        browserInfo.name = "Safari";
+        browserInfo.version = match ? match[1] : "Unknown";
+        browserInfo.engine = "WebKit";
+    }
+    else if (userAgent.indexOf("Firefox") > -1) {
+        const match = userAgent.match(/Firefox\/(\d+\.\d+)/);
+        browserInfo.name = "Firefox";
+        browserInfo.version = match ? match[1] : "Unknown";
+        browserInfo.engine = "Gecko";
+    }
+    else if (userAgent.indexOf("Edg") > -1) {
+        const match = userAgent.match(/Edg\/(\d+\.\d+)/);
+        browserInfo.name = "Edge";
+        browserInfo.version = match ? match[1] : "Unknown";
+        browserInfo.engine = "Blink";
+    }
+    else if (userAgent.indexOf("Opera") > -1 || userAgent.indexOf("OPR") > -1) {
+        const match = userAgent.match(/(?:Opera|OPR)\/(\d+\.\d+)/);
+        browserInfo.name = "Opera";
+        browserInfo.version = match ? match[1] : "Unknown";
+        browserInfo.engine = "Blink";
+    }
+    
+    return browserInfo;
 }
 
 function submitAttendance(token) {
@@ -224,6 +314,7 @@ function submitAttendance(token) {
     scannerBusy = true;
     
     const deviceInfo = getDeviceInfo();
+    const browserInfo = getBrowserInfo();
 
     fetch("attendance-submit.php", {
         method: "POST",
@@ -233,6 +324,7 @@ function submitAttendance(token) {
             + "&scan_lng=" + encodeURIComponent(scanGeo.lng)
             + "&scan_address=" + encodeURIComponent(scanGeo.address)
             + "&device_info=" + encodeURIComponent(JSON.stringify(deviceInfo))
+            + "&browser_info=" + encodeURIComponent(JSON.stringify(browserInfo))
     })
     .then(res => res.text())
     .then(data => {

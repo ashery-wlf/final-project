@@ -4,7 +4,7 @@
 $servername = "localhost";
 $username = "root";
 $password = "";
-$database = "qr_attendance";
+$database = "qr_attendance_v2";
 
 // Create connection
 $conn = new mysqli($servername, $username, $password, $database);

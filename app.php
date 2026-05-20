@@ -12,6 +12,19 @@ function ensureEventSchema($conn)
         return;
     }
 
+    ensureUserSchema($conn);
+
+    $conn->query("
+        CREATE TABLE IF NOT EXISTS events (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            date DATE NOT NULL,
+            time TIME NOT NULL,
+            created_by INT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    ");
+
     $columns = [];
     $result = $conn->query("SHOW COLUMNS FROM events");
 
@@ -22,26 +35,52 @@ function ensureEventSchema($conn)
     }
 
     $additions = [
-        "description" => "ALTER TABLE events ADD COLUMN description TEXT NULL AFTER name",
-        "venue_name" => "ALTER TABLE events ADD COLUMN venue_name VARCHAR(255) NULL AFTER image",
-        "venue_location" => "ALTER TABLE events ADD COLUMN venue_location VARCHAR(255) NULL AFTER venue_name",
-        "location_lat" => "ALTER TABLE events ADD COLUMN location_lat DECIMAL(10,7) NULL AFTER venue_location",
-        "location_lng" => "ALTER TABLE events ADD COLUMN location_lng DECIMAL(10,7) NULL AFTER location_lat",
-        "invited_emails" => "ALTER TABLE events ADD COLUMN invited_emails TEXT NULL AFTER access_code",
-        "target_audience" => "ALTER TABLE events ADD COLUMN target_audience VARCHAR(255) NULL AFTER venue_location",
-        "registration_mode" => "ALTER TABLE events ADD COLUMN registration_mode VARCHAR(20) NOT NULL DEFAULT 'self' AFTER type",
-        "end_time" => "ALTER TABLE events ADD COLUMN end_time TIME NULL AFTER time",
-        "attendance_start" => "ALTER TABLE events ADD COLUMN attendance_start TIME NULL AFTER end_time",
-        "attendance_end" => "ALTER TABLE events ADD COLUMN attendance_end TIME NULL AFTER attendance_start",
-        "deleted" => "ALTER TABLE events ADD COLUMN deleted BOOLEAN NOT NULL DEFAULT FALSE AFTER attendance_end",
-        "deleted_at" => "ALTER TABLE events ADD COLUMN deleted_at TIMESTAMP NULL AFTER deleted",
+        "name" => "ALTER TABLE events ADD COLUMN name VARCHAR(255) NOT NULL DEFAULT 'Untitled Event'",
+        "date" => "ALTER TABLE events ADD COLUMN date DATE NULL",
+        "time" => "ALTER TABLE events ADD COLUMN time TIME NULL",
+        "created_by" => "ALTER TABLE events ADD COLUMN created_by INT NOT NULL DEFAULT 0",
+        "description" => "ALTER TABLE events ADD COLUMN description TEXT NULL",
+        "image" => "ALTER TABLE events ADD COLUMN image VARCHAR(255) NULL DEFAULT 'logo.png'",
+        "venue_name" => "ALTER TABLE events ADD COLUMN venue_name VARCHAR(255) NULL",
+        "venue_location" => "ALTER TABLE events ADD COLUMN venue_location VARCHAR(255) NULL",
+        "location_lat" => "ALTER TABLE events ADD COLUMN location_lat DECIMAL(10,7) NULL",
+        "location_lng" => "ALTER TABLE events ADD COLUMN location_lng DECIMAL(10,7) NULL",
+        "max_distance_km" => "ALTER TABLE events ADD COLUMN max_distance_km DECIMAL(10,2) NULL",
+        "target_audience" => "ALTER TABLE events ADD COLUMN target_audience VARCHAR(255) NULL",
+        "type" => "ALTER TABLE events ADD COLUMN type VARCHAR(20) NOT NULL DEFAULT 'online'",
+        "registration_mode" => "ALTER TABLE events ADD COLUMN registration_mode VARCHAR(20) NOT NULL DEFAULT 'self'",
+        "access_code" => "ALTER TABLE events ADD COLUMN access_code VARCHAR(20) NULL",
+        "invited_emails" => "ALTER TABLE events ADD COLUMN invited_emails TEXT NULL",
+        "end_time" => "ALTER TABLE events ADD COLUMN end_time TIME NULL",
+        "attendance_start" => "ALTER TABLE events ADD COLUMN attendance_start TIME NULL",
+        "attendance_end" => "ALTER TABLE events ADD COLUMN attendance_end TIME NULL",
+        "deleted" => "ALTER TABLE events ADD COLUMN deleted BOOLEAN NOT NULL DEFAULT FALSE",
+        "deleted_at" => "ALTER TABLE events ADD COLUMN deleted_at TIMESTAMP NULL",
     ];
 
     foreach ($additions as $name => $sql) {
         if (!isset($columns[$name])) {
             $conn->query($sql);
+            $columns[$name] = true;
         }
     }
+
+    if (isset($columns['title'])) {
+        $conn->query("ALTER TABLE events MODIFY COLUMN title VARCHAR(200) NULL");
+        $conn->query("UPDATE events SET name = title WHERE (name IS NULL OR name = '' OR name = 'Untitled Event') AND title IS NOT NULL AND title <> ''");
+    }
+
+    if (isset($columns['start_datetime'])) {
+        $conn->query("ALTER TABLE events MODIFY COLUMN start_datetime DATETIME NULL");
+        $conn->query("UPDATE events SET date = DATE(start_datetime) WHERE date IS NULL AND start_datetime IS NOT NULL");
+        $conn->query("UPDATE events SET time = TIME(start_datetime) WHERE time IS NULL AND start_datetime IS NOT NULL");
+    }
+
+    if (isset($columns['end_datetime'])) {
+        $conn->query("ALTER TABLE events MODIFY COLUMN end_datetime DATETIME NULL");
+    }
+
+    $conn->query("UPDATE events SET image = 'logo.png' WHERE image IS NULL OR image = ''");
 
     $conn->query("
         UPDATE events
@@ -50,6 +89,17 @@ function ensureEventSchema($conn)
                 CASE WHEN type = 'private' THEN 'code' ELSE 'self' END
             ELSE registration_mode
         END
+    ");
+
+    $conn->query("
+        CREATE TABLE IF NOT EXISTS participants (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id INT NULL,
+            event_id INT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_user_id (user_id),
+            INDEX idx_event_id (event_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     ");
 
     $participantColumns = [];
@@ -61,16 +111,18 @@ function ensureEventSchema($conn)
     }
 
     $participantAdditions = [
-        "participant_name" => "ALTER TABLE participants ADD COLUMN participant_name VARCHAR(255) NULL AFTER event_id",
-        "participant_email" => "ALTER TABLE participants ADD COLUMN participant_email VARCHAR(255) NULL AFTER participant_name",
-        "participant_phone" => "ALTER TABLE participants ADD COLUMN participant_phone VARCHAR(50) NULL AFTER participant_email",
-        "invite_status" => "ALTER TABLE participants ADD COLUMN invite_status VARCHAR(30) NOT NULL DEFAULT 'registered' AFTER participant_phone",
-        "invited_at" => "ALTER TABLE participants ADD COLUMN invited_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP AFTER invite_status",
+        "participant_name" => "ALTER TABLE participants ADD COLUMN participant_name VARCHAR(255) NULL",
+        "participant_email" => "ALTER TABLE participants ADD COLUMN participant_email VARCHAR(255) NULL",
+        "participant_phone" => "ALTER TABLE participants ADD COLUMN participant_phone VARCHAR(50) NULL",
+        "invite_status" => "ALTER TABLE participants ADD COLUMN invite_status VARCHAR(30) NOT NULL DEFAULT 'registered'",
+        "invited_at" => "ALTER TABLE participants ADD COLUMN invited_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP",
+        "access_code" => "ALTER TABLE participants ADD COLUMN access_code VARCHAR(20) NULL",
     ];
 
     foreach ($participantAdditions as $name => $sql) {
         if (!isset($participantColumns[$name])) {
             $conn->query($sql);
+            $participantColumns[$name] = true;
         }
     }
     
@@ -91,6 +143,17 @@ function ensureEventSchema($conn)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     ");
 
+    $conn->query("
+        CREATE TABLE IF NOT EXISTS attendance (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id INT NOT NULL,
+            event_id INT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_user_id (user_id),
+            INDEX idx_event_id (event_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    ");
+
     $attendanceColumns = [];
     $attendanceResult = $conn->query("SHOW COLUMNS FROM attendance");
     if ($attendanceResult) {
@@ -100,22 +163,45 @@ function ensureEventSchema($conn)
     }
 
     $attendanceAdditions = [
-        "user_name" => "ALTER TABLE attendance ADD COLUMN user_name VARCHAR(255) NULL AFTER user_id",
-        "user_email" => "ALTER TABLE attendance ADD COLUMN user_email VARCHAR(255) NULL AFTER user_name",
-        "user_phone" => "ALTER TABLE attendance ADD COLUMN user_phone VARCHAR(50) NULL AFTER user_email",
-        "device_info" => "ALTER TABLE attendance ADD COLUMN device_info LONGTEXT NULL AFTER user_phone",
-        "attendance_status" => "ALTER TABLE attendance ADD COLUMN attendance_status VARCHAR(30) NOT NULL DEFAULT 'present' AFTER device_info",
-        "time" => "ALTER TABLE attendance ADD COLUMN time TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP AFTER attendance_status",
-        "scan_lat" => "ALTER TABLE attendance ADD COLUMN scan_lat DECIMAL(10,7) NULL AFTER time",
-        "scan_lng" => "ALTER TABLE attendance ADD COLUMN scan_lng DECIMAL(10,7) NULL AFTER scan_lat",
-        "scan_address" => "ALTER TABLE attendance ADD COLUMN scan_address VARCHAR(255) NULL AFTER scan_lng",
+        "user_name" => "ALTER TABLE attendance ADD COLUMN user_name VARCHAR(255) NULL",
+        "user_email" => "ALTER TABLE attendance ADD COLUMN user_email VARCHAR(255) NULL",
+        "user_phone" => "ALTER TABLE attendance ADD COLUMN user_phone VARCHAR(50) NULL",
+        "device_info" => "ALTER TABLE attendance ADD COLUMN device_info LONGTEXT NULL",
+        "attendance_status" => "ALTER TABLE attendance ADD COLUMN attendance_status VARCHAR(30) NOT NULL DEFAULT 'present'",
+        "time" => "ALTER TABLE attendance ADD COLUMN time TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP",
+        "scan_lat" => "ALTER TABLE attendance ADD COLUMN scan_lat DECIMAL(10,7) NULL",
+        "scan_lng" => "ALTER TABLE attendance ADD COLUMN scan_lng DECIMAL(10,7) NULL",
+        "scan_address" => "ALTER TABLE attendance ADD COLUMN scan_address VARCHAR(255) NULL",
+        "scan_ip" => "ALTER TABLE attendance ADD COLUMN scan_ip VARCHAR(80) NULL",
+        "browser_info" => "ALTER TABLE attendance ADD COLUMN browser_info LONGTEXT NULL",
+        "distance_from_venue" => "ALTER TABLE attendance ADD COLUMN distance_from_venue DECIMAL(10,2) NULL",
+        "phone_matched" => "ALTER TABLE attendance ADD COLUMN phone_matched BOOLEAN NOT NULL DEFAULT FALSE",
+        "verification_method" => "ALTER TABLE attendance ADD COLUMN verification_method VARCHAR(30) NULL",
+        "check_in_time" => "ALTER TABLE attendance ADD COLUMN check_in_time TIME NULL",
+        "notes" => "ALTER TABLE attendance ADD COLUMN notes TEXT NULL",
     ];
 
     foreach ($attendanceAdditions as $name => $sql) {
         if (!isset($attendanceColumns[$name])) {
             $conn->query($sql);
+            $attendanceColumns[$name] = true;
         }
     }
+
+    $conn->query("
+        CREATE TABLE IF NOT EXISTS attendance_logs (
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            attendance_id INT NOT NULL,
+            user_id INT NOT NULL,
+            event_id INT NOT NULL,
+            action VARCHAR(50) NOT NULL,
+            details TEXT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_attendance_id (attendance_id),
+            INDEX idx_user_id (user_id),
+            INDEX idx_event_id (event_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    ");
 
     $done = true;
 }
@@ -138,13 +224,37 @@ function ensureUserSchema($conn)
     }
 
     $additions = [
-        "profile_image" => "ALTER TABLE users ADD COLUMN profile_image VARCHAR(255) NULL AFTER phone",
+        "name" => "ALTER TABLE users ADD COLUMN name VARCHAR(255) NOT NULL DEFAULT ''",
+        "password" => "ALTER TABLE users ADD COLUMN password VARCHAR(255) NOT NULL DEFAULT ''",
+        "profile_image" => "ALTER TABLE users ADD COLUMN profile_image VARCHAR(255) NULL",
     ];
 
     foreach ($additions as $name => $sql) {
         if (!isset($columns[$name])) {
             $conn->query($sql);
+            $columns[$name] = true;
         }
+    }
+
+    if (isset($columns['first_name']) || isset($columns['last_name'])) {
+        if (isset($columns['first_name'])) {
+            $conn->query("ALTER TABLE users MODIFY COLUMN first_name VARCHAR(50) NULL DEFAULT ''");
+        }
+        if (isset($columns['last_name'])) {
+            $conn->query("ALTER TABLE users MODIFY COLUMN last_name VARCHAR(50) NULL DEFAULT ''");
+        }
+        $firstNameExpression = isset($columns['first_name']) ? "first_name" : "''";
+        $lastNameExpression = isset($columns['last_name']) ? "last_name" : "''";
+        $conn->query("
+            UPDATE users
+            SET name = TRIM(CONCAT(COALESCE($firstNameExpression, ''), ' ', COALESCE($lastNameExpression, '')))
+            WHERE name = ''
+        ");
+    }
+
+    if (isset($columns['password_hash'])) {
+        $conn->query("ALTER TABLE users MODIFY COLUMN password_hash VARCHAR(255) NULL DEFAULT ''");
+        $conn->query("UPDATE users SET password = password_hash WHERE password = '' AND password_hash IS NOT NULL AND password_hash <> ''");
     }
 
     $done = true;
@@ -194,6 +304,81 @@ function appConsumeFlash()
 function appCurrentUrl()
 {
     return $_SERVER['REQUEST_URI'] ?? 'dashboard.php';
+}
+
+function appCsrfToken()
+{
+    if (empty($_SESSION['csrf_token'])) {
+        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+    }
+
+    return $_SESSION['csrf_token'];
+}
+
+function appCsrfInput()
+{
+    return '<input type="hidden" name="csrf_token" value="' . h(appCsrfToken()) . '">';
+}
+
+function appVerifyCsrf()
+{
+    $token = $_POST['csrf_token'] ?? '';
+    return is_string($token) && isset($_SESSION['csrf_token']) && hash_equals($_SESSION['csrf_token'], $token);
+}
+
+function appUploadedImagePath($file, $prefix, &$error = '')
+{
+    if (empty($file['name'])) {
+        return '';
+    }
+
+    if ((int) ($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+        $error = 'Could not upload that image.';
+        return false;
+    }
+
+    if (!is_uploaded_file($file['tmp_name'])) {
+        $error = 'Invalid upload.';
+        return false;
+    }
+
+    $extension = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+    $allowedExtensions = ['jpg', 'jpeg', 'png', 'webp', 'gif'];
+    if (!in_array($extension, $allowedExtensions, true)) {
+        $error = 'Image must be jpg, png, webp, or gif.';
+        return false;
+    }
+
+    $allowedMime = [
+        'image/jpeg' => 'jpg',
+        'image/png' => 'png',
+        'image/webp' => 'webp',
+        'image/gif' => 'gif',
+    ];
+    $info = finfo_open(FILEINFO_MIME_TYPE);
+    $mime = $info ? finfo_file($info, $file['tmp_name']) : '';
+    if ($info) {
+        finfo_close($info);
+    }
+
+    if (!isset($allowedMime[$mime])) {
+        $error = 'Uploaded file is not a valid image.';
+        return false;
+    }
+
+    $uploadDir = 'uploads';
+    if (!is_dir($uploadDir)) {
+        @mkdir($uploadDir, 0755, true);
+    }
+
+    $safePrefix = preg_replace('/[^A-Za-z0-9_-]/', '_', $prefix);
+    $target = $uploadDir . '/' . $safePrefix . '_' . bin2hex(random_bytes(8)) . '.' . ($allowedMime[$mime] === 'jpg' ? 'jpg' : $allowedMime[$mime]);
+    if (!move_uploaded_file($file['tmp_name'], $target)) {
+        $error = 'Could not save that image.';
+        return false;
+    }
+
+    return $target;
 }
 
 function generateAccessCode($length = 6)
@@ -344,6 +529,12 @@ function appHandleProfileActions($conn, $userId)
     $action = $_POST['app_action'];
     $redirect = appCurrentUrl();
 
+    if (!appVerifyCsrf()) {
+        appSetFlash('error', 'Security check failed. Please try again.');
+        header('Location: ' . $redirect);
+        exit();
+    }
+
     if ($action === 'update_profile') {
         $name = trim($_POST['profile_name'] ?? '');
         $email = trim($_POST['profile_email'] ?? '');
@@ -374,34 +565,15 @@ function appHandleProfileActions($conn, $userId)
         $profileImage = $current['profile_image'] ?? '';
 
         if (!empty($_FILES['profile_image']['name'])) {
-            $uploadDir = 'uploads';
-            if (!is_dir($uploadDir)) {
-                @mkdir($uploadDir, 0777, true);
-            }
-
-            $extension = strtolower(pathinfo($_FILES['profile_image']['name'], PATHINFO_EXTENSION));
-            $allowed = ['jpg', 'jpeg', 'png', 'webp', 'gif'];
-
-            if (!in_array($extension, $allowed, true)) {
-                appSetFlash('error', 'Profile image must be jpg, png, webp, or gif.');
+            $uploadError = '';
+            $uploadedPath = appUploadedImagePath($_FILES['profile_image'], 'profile_' . $userId, $uploadError);
+            if ($uploadedPath === false) {
+                appSetFlash('error', $uploadError);
                 header('Location: ' . $redirect);
                 exit();
             }
 
-            if ((int) ($_FILES['profile_image']['error'] ?? 1) !== 0) {
-                appSetFlash('error', 'Could not upload that profile image.');
-                header('Location: ' . $redirect);
-                exit();
-            }
-
-            $target = $uploadDir . '/profile_' . $userId . '_' . time() . '.' . $extension;
-            if (!move_uploaded_file($_FILES['profile_image']['tmp_name'], $target)) {
-                appSetFlash('error', 'Could not save that profile image.');
-                header('Location: ' . $redirect);
-                exit();
-            }
-
-            $profileImage = $target;
+            $profileImage = $uploadedPath;
         }
 
         $safeName = $conn->real_escape_string($name);
@@ -441,10 +613,11 @@ function appHandleProfileActions($conn, $userId)
             exit();
         }
 
-        $userResult = $conn->query("SELECT password FROM users WHERE id=" . (int) $userId . " LIMIT 1");
+        $userResult = $conn->query("SELECT * FROM users WHERE id=" . (int) $userId . " LIMIT 1");
         $user = $userResult ? $userResult->fetch_assoc() : null;
+        $storedPassword = $user['password'] ?? ($user['password_hash'] ?? '');
 
-        if (!$user || !password_verify($currentPassword, $user['password'])) {
+        if (!$user || !password_verify($currentPassword, $storedPassword)) {
             appSetFlash('error', 'Current password is not correct.');
             header('Location: ' . $redirect);
             exit();
@@ -452,7 +625,8 @@ function appHandleProfileActions($conn, $userId)
 
         $hashed = password_hash($newPassword, PASSWORD_DEFAULT);
         $safeHash = $conn->real_escape_string($hashed);
-        $conn->query("UPDATE users SET password='$safeHash' WHERE id=" . (int) $userId);
+        $passwordColumn = array_key_exists('password', $user) ? 'password' : 'password_hash';
+        $conn->query("UPDATE users SET $passwordColumn='$safeHash' WHERE id=" . (int) $userId);
 
         appSetFlash('success', 'Password changed successfully.');
         header('Location: ' . $redirect);
@@ -821,9 +995,24 @@ cursor:pointer;
 transition:background 0.2s;
 text-decoration:none;
 }
-.app-profile-logout:hover{background:rgba(255,255,255,0.16);}
-.app-content{flex:1;padding:18px 18px 18px 266px;height:100vh;overflow:hidden;}
-.app-shell{max-width:1180px;margin:0 auto;background:rgba(255,255,255,0.66);border:1px solid rgba(255,255,255,0.75);border-radius:18px;overflow:hidden;box-shadow:var(--shadow);backdrop-filter:blur(12px);height:calc(100vh - 36px);display:flex;flex-direction:column;}
+.app-profile-logout:hover{
+background:rgba(255,255,255,0.16);
+}
+.app-content{flex:1;
+padding:18px 18px 18px 266px;
+height:100vh;overflow:hidden;
+}
+.app-shell{max-width:1180px;
+margin:0 auto;
+background:rgba(255,255,255,0.66);
+border:1px solid rgba(255,255,255,0.75);
+border-radius:18px;
+overflow:hidden;
+box-shadow:var(--shadow);backdrop-filter:blur(12px);
+height:calc(100vh - 36px);
+display:flex;
+flex-direction:column;
+}
 .app-topbar{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 18px;background:rgba(255,255,255,0.92);border-bottom:1px solid var(--line);flex-shrink:0;}
 .app-topbar-brand{display:none;align-items:center;gap:10px;font-weight:800;color:#0f172a;}
 .app-topbar-brand img{width:34px;height:34px;object-fit:contain;}
@@ -875,7 +1064,10 @@ text-decoration:none;
     body{background:#f5f7fc;}
     .app-content{padding:0;margin-left:0;height:100vh;}
     .app-shell{max-width:none;border-radius:0;border-left:0;border-right:0;border-bottom:0;height:100vh;}
-    .app-topbar{padding:12px 14px;z-index:40;background:rgba(255,255,255,0.96);}
+    .app-topbar{
+    padding:12px 14px;z-index:40;
+    background:rgba(255,255,255,0.96);
+    }
     .app-topbar-brand{display:flex;}
     .app-topbar-profile{display:flex;}
     .app-topbar-brand span{display:block;}
@@ -1014,6 +1206,7 @@ function renderAppShellEnd($active = '')
             <h4>Profile Details</h4>
             <form method="POST" enctype="multipart/form-data" class="app-drawer-form">
                 <input type="hidden" name="app_action" value="update_profile">
+                ' . appCsrfInput() . '
                 <label>Full Name
                     <input type="text" name="profile_name" value="' . h($profileName) . '" required>
                 </label>
@@ -1035,6 +1228,7 @@ function renderAppShellEnd($active = '')
             <h4>Security</h4>
             <form method="POST" class="app-drawer-form">
                 <input type="hidden" name="app_action" value="change_password">
+                ' . appCsrfInput() . '
                 <label>Current Password
                     <input type="password" name="current_password" required>
                 </label>
@@ -1055,6 +1249,16 @@ function renderAppShellEnd($active = '')
 
     echo '<script>
 (function() {
+    // ========== HISTORY DEFENSE ==========
+    // Prevent back button access to protected pages
+    window.history.pushState(null, "", window.location.href);
+    window.onpopstate = function () {
+        window.history.pushState(null, "", window.location.href);
+        // // Force redirect to login if trying to go back
+        // window.location.href = "login.php";
+    };
+
+    // ========== PROFILE DRAWER ==========
     const body = document.body;
     const openButtons = document.querySelectorAll("[data-open-profile]");
     const closeButtons = document.querySelectorAll("[data-close-profile]");

@@ -10,8 +10,12 @@ $search = trim($_GET['search'] ?? "");
 $safeSearch = $conn->real_escape_string($search);
 
 // Handle delete action
-if (isset($_GET['delete']) && is_numeric($_GET['delete'])) {
-    $eventId = (int) $_GET['delete'];
+if (isset($_POST['delete_event']) && is_numeric($_POST['delete_event'])) {
+    if (!appVerifyCsrf()) {
+        die("Security check failed.");
+    }
+
+    $eventId = (int) $_POST['delete_event'];
     $eventCheck = $conn->query("SELECT created_by FROM events WHERE id = $eventId LIMIT 1");
     if ($eventCheck && $eventCheck->num_rows > 0) {
         $event = $eventCheck->fetch_assoc();

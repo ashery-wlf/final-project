@@ -17,7 +17,7 @@ if ($event_id <= 0) {
     exit();
 }
 
-$event = $conn->query("SELECT * FROM events WHERE id=$event_id LIMIT 1")->fetch_assoc();
+$event = $conn->query("SELECT * FROM events WHERE id=$event_id AND deleted = FALSE LIMIT 1")->fetch_assoc();
 
 if (!$event) {
     echo "Event not found.";

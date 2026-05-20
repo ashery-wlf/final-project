@@ -10,6 +10,9 @@ $message = "";
 $error = "";
 
 if (isset($_POST['submit'])) {
+    if (!appVerifyCsrf()) {
+        $error = "Security check failed. Please try again.";
+    } else {
     $name = trim($_POST['name'] ?? "");
     $description = trim($_POST['description'] ?? "");
     $date = $_POST['date'] ?? "";
@@ -22,6 +25,7 @@ if (isset($_POST['submit'])) {
     $venue_location = trim($_POST['venue_location'] ?? "");
     $location_lat = trim($_POST['location_lat'] ?? "");
     $location_lng = trim($_POST['location_lng'] ?? "");
+    $max_distance_km = trim($_POST['max_distance_km'] ?? "");
     $target_audience = trim($_POST['target_audience'] ?? "");
     $access_code = trim($_POST['access_code'] ?? "");
     $registrant_list = trim($_POST['registrant_list'] ?? "");
@@ -32,24 +36,23 @@ if (isset($_POST['submit'])) {
         $imagePath = "logo.png";
 
         if (!empty($_FILES['image']['name'])) {
-            if (!is_dir("uploads")) {
-                mkdir("uploads", 0777, true);
-            }
-
-            $filename = time() . "_" . basename($_FILES['image']['name']);
-            $targetPath = "uploads/" . preg_replace('/[^A-Za-z0-9._-]/', '_', $filename);
-
-            if (move_uploaded_file($_FILES['image']['tmp_name'], $targetPath)) {
-                $imagePath = $targetPath;
+            $uploadError = "";
+            $uploadedPath = appUploadedImagePath($_FILES['image'], 'event_' . $user_id, $uploadError);
+            if ($uploadedPath === false) {
+                $error = $uploadError;
+            } else {
+                $imagePath = $uploadedPath;
             }
         }
 
-        if ($registration_mode === "code" && $access_code === "") {
+        if ($error === "" && $registration_mode === "code" && $access_code === "") {
             $access_code = generateAccessCode();
         }
 
+        if ($error === "") {
         $locationLatValue = is_numeric($location_lat) ? (float) $location_lat : null;
         $locationLngValue = is_numeric($location_lng) ? (float) $location_lng : null;
+        $maxDistanceValue = is_numeric($max_distance_km) && (float) $max_distance_km >= 0 ? (float) $max_distance_km : null;
         $registrants = parseRegistrantLines($registrant_list);
         $invitedEmailsText = implode("\n", array_map(function ($item) {
             return $item['email'];
@@ -58,12 +61,12 @@ if (isset($_POST['submit'])) {
         $stmt = $conn->prepare("
             INSERT INTO events(
                 name, description, date, time, end_time, attendance_start, attendance_end,
-                image, venue_name, venue_location, location_lat, location_lng, target_audience, created_by, type, registration_mode, access_code, invited_emails
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'online', ?, ?, ?)
+                image, venue_name, venue_location, location_lat, location_lng, max_distance_km, target_audience, created_by, type, registration_mode, access_code, invited_emails
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'online', ?, ?, ?)
         ");
 
         $stmt->bind_param(
-            "ssssssssssddsisss",
+            "ssssssssssdddsisss",
             $name,
             $description,
             $date,
@@ -76,6 +79,7 @@ if (isset($_POST['submit'])) {
             $venue_location,
             $locationLatValue,
             $locationLngValue,
+            $maxDistanceValue,
             $target_audience,
             $user_id,
             $registration_mode,
@@ -102,6 +106,8 @@ if (isset($_POST['submit'])) {
         }
 
         $error = "Event could not be created right now.";
+        }
+    }
     }
 }
 ?>
@@ -500,6 +506,7 @@ renderAppShellStart($conn, [
         <?php endif; ?>
 
         <form method="POST" enctype="multipart/form-data" class="form">
+            <?php echo appCsrfInput(); ?>
             <div class="field full">
                 <label for="name">Event Name</label>
                 <input id="name" type="text" name="name" required value="<?php echo h($_POST['name'] ?? ''); ?>">
@@ -545,6 +552,18 @@ renderAppShellStart($conn, [
             <div class="field">
                 <label for="venue_name">Venue Name</label>
                 <input id="venue_name" type="text" name="venue_name" placeholder="Example: Main Hall" value="<?php echo h($_POST['venue_name'] ?? ''); ?>">
+            </div>
+
+            <div class="field">
+                <label for="venue_location">Venue Address</label>
+                <input id="venue_location" type="text" name="venue_location" placeholder="Example: Samora Avenue, Dar es Salaam" value="<?php echo h($_POST['venue_location'] ?? ''); ?>">
+                <div class="inline-note">This will be automatically updated when you click on the map</div>
+            </div>
+
+            <div class="field">
+                <label for="max_distance_km">Allowed Scan Radius (km)</label>
+                <input id="max_distance_km" type="number" name="max_distance_km" min="0" step="0.01" placeholder="Example: 0.20" value="<?php echo h($_POST['max_distance_km'] ?? ''); ?>">
+                <div class="inline-note">Leave empty or 0 to allow scans from any distance.</div>
             </div>
 
             
@@ -700,7 +719,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     // Simple marker function
-    function setMarker(lat, lng, zoom) {
+    function setMarker(lat, lng, zoom, address = null) {
         console.log("Setting marker at:", lat, lng);
         
         if (!map) {
@@ -716,6 +735,25 @@ document.addEventListener('DOMContentLoaded', function() {
         
         latInput.value = lat.toFixed(7);
         lngInput.value = lng.toFixed(7);
+        
+        // Update venue location field with address if provided, or reverse geocode if not
+        const venueLocationInput = document.getElementById("venue_location");
+        if (address) {
+            venueLocationInput.value = address;
+        } else {
+            // Reverse geocode to get address
+            fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data && data.display_name) {
+                        venueLocationInput.value = data.display_name;
+                    }
+                })
+                .catch(error => {
+                    console.log("Reverse geocoding failed:", error);
+                    venueLocationInput.value = `${lat.toFixed(7)}, ${lng.toFixed(7)}`;
+                });
+        }
         
         if (zoom) {
             map.setView([lat, lng], zoom);
@@ -744,7 +782,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     console.log("Search results:", data);
                     if (data && data.length > 0) {
                         const result = data[0];
-                        setMarker(parseFloat(result.lat), parseFloat(result.lon), 15);
+                        setMarker(parseFloat(result.lat), parseFloat(result.lon), 15, result.display_name);
                         status.textContent = "Location found: " + result.display_name;
                     } else {
                         status.textContent = "Location not found. Try another name.";
@@ -800,6 +838,176 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     console.log("Map functionality initialized");
+    
+    // Private Event Registrants Modal Functionality
+    const openRegistrantModal = document.getElementById("openRegistrantModal");
+    const registrantModal = document.getElementById("registrantModal");
+    const closeModal = document.getElementById("closeModal");
+    const cancelModal = document.getElementById("cancelModal");
+    const saveRegistrants = document.getElementById("saveRegistrants");
+    const addAnotherRegistrant = document.getElementById("addAnotherRegistrant");
+    const registrantsList = document.getElementById("registrantsList");
+    const registrantsListContent = document.getElementById("registrantsListContent");
+    const registrantCount = document.getElementById("registrantCount");
+    const registrantCountText = document.getElementById("registrantCountText");
+    const registrant_list = document.getElementById("registrant_list");
+    
+    let registrants = [];
+    
+    // Open modal
+    if (openRegistrantModal) {
+        openRegistrantModal.addEventListener("click", function() {
+            registrantModal.style.display = "flex";
+            document.body.style.overflow = "hidden";
+        });
+    }
+    
+    // Close modal functions
+    function closeRegistrantModal() {
+        registrantModal.style.display = "none";
+        document.body.style.overflow = "auto";
+    }
+    
+    if (closeModal) {
+        closeModal.addEventListener("click", closeRegistrantModal);
+    }
+    
+    if (cancelModal) {
+        cancelModal.addEventListener("click", closeRegistrantModal);
+    }
+    
+    // Close modal when clicking outside
+    registrantModal.addEventListener("click", function(e) {
+        if (e.target === registrantModal) {
+            closeRegistrantModal();
+        }
+    });
+    
+    // Add registrant function
+    function addRegistrant() {
+        const name = document.getElementById("modalRegistrantName").value.trim();
+        const email = document.getElementById("modalRegistrantEmail").value.trim();
+        const phone = document.getElementById("modalRegistrantPhone").value.trim();
+        const accessCode = document.getElementById("modalAccessCode").value.trim();
+        
+        if (!name || !email || !phone) {
+            alert("Please fill in all required fields (Name, Email, Phone)");
+            return;
+        }
+        
+        if (!validateEmail(email)) {
+            alert("Please enter a valid email address");
+            return;
+        }
+        
+        // Check for duplicate email
+        if (registrants.some(r => r.email === email)) {
+            alert("This email is already added");
+            return;
+        }
+        
+        const registrant = {
+            name: name,
+            email: email,
+            phone: phone,
+            accessCode: accessCode || generateAccessCode()
+        };
+        
+        registrants.push(registrant);
+        updateRegistrantsList();
+        clearModalForm();
+        
+        // Show registrants list
+        if (registrants.length > 0) {
+            registrantsList.style.display = "block";
+        }
+    }
+    
+    // Update registrants list display
+    function updateRegistrantsList() {
+        registrantsListContent.innerHTML = "";
+        registrants.forEach((registrant, index) => {
+            const registrantDiv = document.createElement("div");
+            registrantDiv.className = "registrant-item";
+            registrantDiv.innerHTML = `
+                <div class="registrant-info">
+                    <strong>${registrant.name}</strong><br>
+                    <small>${registrant.email} | ${registrant.phone}</small>
+                    ${registrant.accessCode ? `<br><small>Access Code: <strong>${registrant.accessCode}</strong></small>` : ''}
+                </div>
+                <button type="button" class="remove-registrant" onclick="removeRegistrant(${index})">&times;</button>
+            `;
+            registrantsListContent.appendChild(registrantDiv);
+        });
+        
+        // Update count
+        registrantCountText.textContent = registrants.length;
+        registrantCount.style.display = "block";
+        
+        // Update hidden field
+        registrant_list.value = JSON.stringify(registrants);
+    }
+    
+    // Remove registrant
+    function removeRegistrant(index) {
+        registrants.splice(index, 1);
+        updateRegistrantsList();
+        
+        if (registrants.length === 0) {
+            registrantsList.style.display = "none";
+        }
+    }
+    
+    // Clear modal form
+    function clearModalForm() {
+        document.getElementById("modalRegistrantName").value = "";
+        document.getElementById("modalRegistrantEmail").value = "";
+        document.getElementById("modalRegistrantPhone").value = "";
+        document.getElementById("modalAccessCode").value = "";
+    }
+    
+    // Email validation
+    function validateEmail(email) {
+        const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        return re.test(email);
+    }
+    
+    // Generate access code
+    function generateAccessCode() {
+        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+        let result = '';
+        for (let i = 0; i < 8; i++) {
+            result += chars.charAt(Math.floor(Math.random() * chars.length));
+        }
+        return result;
+    }
+    
+    // Add another registrant
+    if (addAnotherRegistrant) {
+        addAnotherRegistrant.addEventListener("click", addRegistrant);
+    }
+    
+    // Save all registrants
+    if (saveRegistrants) {
+        saveRegistrants.addEventListener("click", function() {
+            if (registrants.length === 0) {
+                alert("Please add at least one registrant");
+                return;
+            }
+            closeRegistrantModal();
+        });
+    }
+    
+    // Load existing registrants if any
+    const existingRegistrants = registrant_list.value;
+    if (existingRegistrants) {
+        try {
+            registrants = JSON.parse(existingRegistrants);
+            updateRegistrantsList();
+        } catch (e) {
+            console.log("No existing registrants found");
+        }
+    }
 });
 </script>
 <?php renderAppShellEnd("create-event"); ?>

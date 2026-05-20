@@ -7,6 +7,9 @@ ensureEventSchema($conn);
 
 $user_id = (int) $_SESSION['user_id'];
 
+// Get selected event ID from URL or POST
+$selectedEventId = isset($_GET['event_id']) ? (int)$_GET['event_id'] : 0;
+
 // Get user's events (events created by this user)
 $userEvents = $conn->query("SELECT * FROM events WHERE created_by=$user_id ORDER BY date DESC");
 
@@ -34,12 +37,19 @@ if ($userEvents && $userEvents->num_rows > 0) {
     }
 }
 
-// Get device information from recent attendance
+// Get selected event details
+$selectedEvent = null;
+if ($selectedEventId > 0) {
+    $selectedEvent = $conn->query("SELECT * FROM events WHERE id=$selectedEventId AND created_by=$user_id LIMIT 1")->fetch_assoc();
+}
+
+// Get device information for selected event or all events
 $deviceStats = [];
+$whereClause = $selectedEventId > 0 ? "WHERE event_id=$selectedEventId" : "WHERE event_id IN (SELECT id FROM events WHERE created_by=$user_id)";
 $deviceResult = $conn->query("
     SELECT device_info, COUNT(*) as count 
     FROM attendance 
-    WHERE event_id IN (SELECT id FROM events WHERE created_by=$user_id)
+    $whereClause
     AND device_info IS NOT NULL
     GROUP BY device_info
 ");
@@ -91,11 +101,12 @@ foreach ($deviceStats as $stat) {
 }
 
 // Get detailed attendance records
+$whereClause = $selectedEventId > 0 ? "WHERE e.created_by=$user_id AND e.id=$selectedEventId" : "WHERE e.created_by=$user_id";
 $detailedRecords = $conn->query("
     SELECT a.*, e.name as event_name
     FROM attendance a
     JOIN events e ON e.id = a.event_id
-    WHERE e.created_by=$user_id
+    $whereClause
     ORDER BY a.time DESC
     LIMIT 100
 ");
@@ -258,19 +269,55 @@ renderAppShellStart($conn, [
 ]);
 ?>
 
+<!-- Event Selection -->
 <div class="stats-grid">
-    <div class="stat-card">
-        <h3>Total Events Created</h3>
-        <div class="number"><?php echo $totalEvents; ?></div>
+    <div class="stat-card" style="grid-column: span 3;">
+        <h3>Select Event</h3>
+        <select id="eventSelector" onchange="window.location.href='report.php?event_id=' + this.value" style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px;">
+            <option value="0">All Events</option>
+            <?php foreach ($attendanceStats as $stat): ?>
+                <option value="<?php echo $stat['event_id']; ?>" <?php echo $selectedEventId == $stat['event_id'] ? 'selected' : ''; ?>>
+                    <?php echo h($stat['event_name'] . ' (' . date('M j, Y', strtotime($stat['event_date'])) . ')'); ?>
+                </option>
+            <?php endforeach; ?>
+        </select>
     </div>
-    <div class="stat-card">
-        <h3>Total Attendance</h3>
-        <div class="number"><?php echo $totalAttendance; ?></div>
-    </div>
-    <div class="stat-card">
-        <h3>Average Attendance</h3>
-        <div class="number"><?php echo $totalEvents > 0 ? round($totalAttendance / $totalEvents) : 0; ?></div>
-    </div>
+</div>
+
+<div class="stats-grid">
+    <?php if ($selectedEvent && $selectedEventId > 0): ?>
+        <!-- Selected Event Statistics -->
+        <?php 
+        $eventAttendance = $conn->query("SELECT COUNT(*) as count FROM attendance WHERE event_id=$selectedEventId")->fetch_assoc();
+        $eventAttendees = (int)$eventAttendance['count'];
+        ?>
+        <div class="stat-card">
+            <h3>Selected Event</h3>
+            <div class="number" style="font-size: 16px; font-weight: normal;"><?php echo h($selectedEvent['name']); ?></div>
+        </div>
+        <div class="stat-card">
+            <h3>Event Attendees</h3>
+            <div class="number"><?php echo $eventAttendees; ?></div>
+        </div>
+        <div class="stat-card">
+            <h3>Event Date</h3>
+            <div class="number" style="font-size: 16px; font-weight: normal;"><?php echo date('M j, Y', strtotime($selectedEvent['date'])); ?></div>
+        </div>
+    <?php else: ?>
+        <!-- Overall Statistics -->
+        <div class="stat-card">
+            <h3>Total Events Created</h3>
+            <div class="number"><?php echo $totalEvents; ?></div>
+        </div>
+        <div class="stat-card">
+            <h3>Total Attendance</h3>
+            <div class="number"><?php echo $totalAttendance; ?></div>
+        </div>
+        <div class="stat-card">
+            <h3>Average Attendance</h3>
+            <div class="number"><?php echo $totalEvents > 0 ? round($totalAttendance / $totalEvents) : 0; ?></div>
+        </div>
+    <?php endif; ?>
 </div>
 
 <?php if (count($attendanceStats) > 0): ?>
@@ -283,7 +330,7 @@ renderAppShellStart($conn, [
 </div>
 
 <div class="chart-container">
-    <div class="chart-title">📊 Event Attendance Overview</div>
+    <div class="chart-title"><?php echo ($selectedEvent && $selectedEventId > 0) ? '📊 ' . h($selectedEvent['name']) . ' Attendance' : '📊 Event Attendance Overview'; ?></div>
     <canvas id="attendanceChart"></canvas>
 </div>
 
@@ -315,18 +362,19 @@ renderAppShellStart($conn, [
 <?php if ($detailedRecords && $detailedRecords->num_rows > 0): ?>
 
 <div class="table-container">
-    <div class="chart-title">📋 Recent Attendance Records</div>
+    <div class="chart-title"><?php echo ($selectedEvent && $selectedEventId > 0) ? '📋 ' . h($selectedEvent['name']) . ' Attendance Records' : '📋 Recent Attendance Records'; ?></div>
     <table>
         <thead>
             <tr>
                 <th>Name</th>
                 <th>Email</th>
                 <th>Phone</th>
-                <th>Event</th>
+                <th>Status</th>
+                <th>Distance</th>
                 <th>Browser</th>
                 <th>Device</th>
                 <th>Location</th>
-                <th>Time</th>
+                <th>Check-in Time</th>
             </tr>
         </thead>
         <tbody>
@@ -336,12 +384,30 @@ renderAppShellStart($conn, [
                 if (!empty($record['device_info'])) {
                     $deviceInfo = json_decode($record['device_info'], true);
                 }
+                
+                // Status badge color
+                $statusClass = 'badge-info';
+                if ($record['attendance_status'] === 'present') $statusClass = 'badge-success';
+                elseif ($record['attendance_status'] === 'late') $statusClass = 'badge-warning';
+                elseif ($record['attendance_status'] === 'absent') $statusClass = 'badge-warning';
                 ?>
                 <tr>
                     <td><?php echo h($record['user_name']); ?></td>
                     <td><?php echo h($record['user_email']); ?></td>
                     <td><?php echo h($record['user_phone']); ?></td>
-                    <td><?php echo h($record['event_name']); ?></td>
+                    <td>
+                        <span class="badge <?php echo $statusClass; ?>">
+                            <?php echo ucfirst(h($record['attendance_status'] ?? 'present')); ?>
+                            <?php if ($record['phone_matched']): ?> ✅<?php endif; ?>
+                        </span>
+                    </td>
+                    <td>
+                        <?php if ($record['distance_from_venue']): ?>
+                            <?php echo number_format($record['distance_from_venue'], 2); ?> km
+                        <?php else: ?>
+                            N/A
+                        <?php endif; ?>
+                    </td>
                     <td>
                         <span class="badge badge-info">
                             <?php echo h($deviceInfo['browser'] ?? 'Unknown'); ?>
@@ -353,8 +419,20 @@ renderAppShellStart($conn, [
                         </span>
                     </td>
                     <td><?php echo h($record['scan_address'] ?: 'Not captured'); ?></td>
-                    <td><?php echo h(date('M j, Y H:i', strtotime($record['time']))); ?></td>
+                    <td>
+                        <?php echo h(date('M j, Y H:i', strtotime($record['time']))); ?>
+                        <?php if (!empty($record['check_in_time'])): ?>
+                            <br><small><?php echo h($record['check_in_time']); ?></small>
+                        <?php endif; ?>
+                    </td>
                 </tr>
+                <?php if (!empty($record['notes'])): ?>
+                <tr>
+                    <td colspan="9" style="background: #f9f9f9; padding: 8px;">
+                        <small><strong>Notes:</strong> <?php echo h($record['notes']); ?></small>
+                    </td>
+                </tr>
+                <?php endif; ?>
             <?php endwhile; ?>
         </tbody>
     </table>
@@ -376,6 +454,23 @@ renderAppShellStart($conn, [
 <?php if (count($attendanceStats) > 0): ?>
 let attendanceChart;
 const attendanceCtx = document.getElementById('attendanceChart').getContext('2d');
+
+<?php if ($selectedEvent && $selectedEventId > 0): ?>
+// Selected Event Data
+const attendanceData = {
+    labels: ['<?php echo h($selectedEvent['name']); ?>'],
+    datasets: [{
+        label: 'Attendance Count',
+        data: [<?php echo $conn->query("SELECT COUNT(*) as count FROM attendance WHERE event_id=$selectedEventId")->fetch_assoc()['count']; ?>],
+        backgroundColor: ['#667eea'],
+        borderColor: ['#667eea'],
+        borderWidth: 2,
+        borderRadius: 8,
+        borderSkipped: false,
+    }]
+};
+<?php else: ?>
+// All Events Data
 const attendanceData = {
     labels: <?php echo json_encode(array_map(function($s) { return $s['event_name']; }, $attendanceStats)); ?>,
     datasets: [{
@@ -404,6 +499,7 @@ const attendanceData = {
         borderSkipped: false,
     }]
 };
+<?php endif; ?>
 
 // Initialize with doughnut chart
 attendanceChart = new Chart(attendanceCtx, {

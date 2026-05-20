@@ -15,7 +15,7 @@ if ($event_id <= 0) {
     die("Event not found.");
 }
 
-$eventQuery = $conn->query("SELECT * FROM events WHERE id=$event_id LIMIT 1");
+$eventQuery = $conn->query("SELECT * FROM events WHERE id=$event_id AND deleted = FALSE LIMIT 1");
 $event = $eventQuery ? $eventQuery->fetch_assoc() : null;
 
 if (!$event) {
@@ -25,38 +25,34 @@ if (!$event) {
 $isAdmin = (int) $event['created_by'] === $user_id;
 
 // Handle delete action
-if (isset($_GET['delete']) && is_numeric($_GET['delete'])) {
-    $deleteId = (int) $_GET['delete'];
-    
-    // Use current event ID if delete parameter matches current event
-    if ($deleteId == $event_id) {
+if (isset($_POST['delete_event']) && $isAdmin) {
+    if (!appVerifyCsrf()) {
+        die("Security check failed.");
+    }
+
+    $deleteId = (int) ($_POST['delete_event'] ?? 0);
+
+    if ($deleteId === $event_id) {
         $eventId = $event_id;
-        
-        // Check if user is the owner
-        if ($isAdmin) {
-            // Store event data in deleted_events table
-            $eventData = json_encode($event);
-            
-            $stmt = $conn->prepare("
-                INSERT INTO deleted_events (original_event_id, event_name, deleted_by, reason, attendance_data_preserved, event_data) 
-                VALUES (?, ?, ?, 'Event deleted by organizer', TRUE, ?)
-            ");
-            $stmt->bind_param("isis", $eventId, $event['name'], $user_id, $eventData);
-            
-            if ($stmt->execute()) {
-                // Now soft delete the original event
-                $result = $conn->query("UPDATE events SET deleted = TRUE, deleted_at = NOW() WHERE id = $eventId");
-                if ($result) {
-                    header("Location: events.php");
-                    exit();
-                } else {
-                    die("Error deleting event: " . $conn->error);
-                }
+
+        $eventData = json_encode($event);
+
+        $stmt = $conn->prepare("
+            INSERT INTO deleted_events (original_event_id, event_name, deleted_by, reason, attendance_data_preserved, event_data)
+            VALUES (?, ?, ?, 'Event deleted by organizer', TRUE, ?)
+        ");
+        $stmt->bind_param("isis", $eventId, $event['name'], $user_id, $eventData);
+
+        if ($stmt->execute()) {
+            $result = $conn->query("UPDATE events SET deleted = TRUE, deleted_at = NOW() WHERE id = $eventId");
+            if ($result) {
+                header("Location: events.php");
+                exit();
             } else {
-                die("Error storing deleted event: " . $conn->error);
+                die("Error deleting event: " . $conn->error);
             }
         } else {
-            die("You don't have permission to delete this event.");
+            die("Error storing deleted event: " . $conn->error);
         }
     } else {
         die("Invalid delete request.");
@@ -68,6 +64,10 @@ if ($isAdmin) {
 }
 
 if (isset($_POST['save_settings']) && $isAdmin) {
+    if (!appVerifyCsrf()) {
+        die("Security check failed.");
+    }
+
     $name = trim($_POST['name'] ?? "");
     $description = trim($_POST['description'] ?? "");
     $date = $_POST['date'] ?? "";
@@ -80,6 +80,7 @@ if (isset($_POST['save_settings']) && $isAdmin) {
     $venue_location = trim($_POST['venue_location'] ?? "");
     $location_lat = trim($_POST['location_lat'] ?? "");
     $location_lng = trim($_POST['location_lng'] ?? "");
+    $max_distance_km = trim($_POST['max_distance_km'] ?? "");
     $target_audience = trim($_POST['target_audience'] ?? "");
     $access_code = trim($_POST['access_code'] ?? "");
     $registrant_list = trim($_POST['registrant_list'] ?? "");
@@ -88,8 +89,9 @@ if (isset($_POST['save_settings']) && $isAdmin) {
         $access_code = generateAccessCode();
     }
 
-    $locationLatValue = is_numeric($location_lat) ? (float) $location_lat : null;
-    $locationLngValue = is_numeric($location_lng) ? (float) $location_lng : null;
+    $locationLatValue = is_numeric($location_lat) ? $location_lat : null;
+    $locationLngValue = is_numeric($location_lng) ? $location_lng : null;
+    $maxDistanceValue = is_numeric($max_distance_km) && (float) $max_distance_km >= 0 ? (float) $max_distance_km : null;
     $registrants = parseRegistrantLines($registrant_list);
     $invitedEmailsText = implode("\n", array_map(function ($item) {
         return $item['email'];
@@ -98,11 +100,11 @@ if (isset($_POST['save_settings']) && $isAdmin) {
     $stmt = $conn->prepare("
         UPDATE events
         SET name=?, description=?, date=?, time=?, end_time=?, attendance_start=?, attendance_end=?,
-            venue_name=?, venue_location=?, location_lat=?, location_lng=?, target_audience=?, registration_mode=?, access_code=?, invited_emails=?
+            venue_name=?, venue_location=?, location_lat=?, location_lng=?, max_distance_km=?, target_audience=?, registration_mode=?, access_code=?, invited_emails=?
         WHERE id=?
     ");
     $stmt->bind_param(
-        "ssssssssssddssssi",
+        "sssssssssdddssssi",
         $name,
         $description,
         $date,
@@ -114,6 +116,7 @@ if (isset($_POST['save_settings']) && $isAdmin) {
         $venue_location,
         $locationLatValue,
         $locationLngValue,
+        $maxDistanceValue,
         $target_audience,
         $registration_mode,
         $access_code,
@@ -129,7 +132,7 @@ if (isset($_POST['save_settings']) && $isAdmin) {
             }
         }
         $message = "Event settings updated.";
-        $eventQuery = $conn->query("SELECT * FROM events WHERE id=$event_id LIMIT 1");
+        $eventQuery = $conn->query("SELECT * FROM events WHERE id=$event_id AND deleted = FALSE LIMIT 1");
         $event = $eventQuery ? $eventQuery->fetch_assoc() : $event;
     } else {
         $error = "Settings could not be saved.";
@@ -137,6 +140,10 @@ if (isset($_POST['save_settings']) && $isAdmin) {
 }
 
 if (isset($_POST['join_self'])) {
+    if (!appVerifyCsrf()) {
+        die("Security check failed.");
+    }
+
     if (registrationExists($conn, $user_id, $event_id)) {
         $message = "You are already registered for this event.";
     } elseif (eventRegistrationMode($event) !== 'self') {
@@ -167,6 +174,10 @@ if (isset($_POST['join_self'])) {
 }
 
 if (isset($_POST['join_code'])) {
+    if (!appVerifyCsrf()) {
+        die("Security check failed.");
+    }
+
     if (registrationExists($conn, $user_id, $event_id)) {
         $message = "You are already registered for this event.";
     } elseif (trim($_POST['access_code'] ?? '') !== (string) ($event['access_code'] ?? '')) {
@@ -182,6 +193,15 @@ $registrationMode = eventRegistrationMode($event);
 $lifecycle = eventLifecycleStatus($event);
 $lifecycleLabel = eventLifecycleLabel($event);
 $windowState = attendanceWindowState($event);
+
+// Get user's personal access code if registered
+$userAccessCode = '';
+if ($isRegistered && $registrationMode === 'code') {
+    $participantResult = $conn->query("SELECT access_code FROM participants WHERE user_id=$user_id AND event_id=$event_id LIMIT 1");
+    if ($participantResult && $participantResult->num_rows > 0) {
+        $userAccessCode = $participantResult->fetch_assoc()['access_code'] ?? '';
+    }
+}
 $registeredCountResult = $conn->query("SELECT COUNT(*) AS total FROM participants WHERE event_id=$event_id");
 $registeredCount = $registeredCountResult ? (int) $registeredCountResult->fetch_assoc()['total'] : 0;
 $attendedCountResult = $conn->query("SELECT COUNT(*) AS total FROM attendance WHERE event_id=$event_id");
@@ -635,6 +655,189 @@ th{
         width:100%;
     }
 }
+
+/* Private Event Registrants Modal Styles */
+.modal-overlay {
+    display: none;
+    position: fixed;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    background: rgba(0,0,0,0.5);
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+}
+
+.modal-content {
+    background: white;
+    border-radius: 16px;
+    max-width: 500px;
+    width: 90%;
+    max-height: 80vh;
+    overflow-y: auto;
+    box-shadow: 0 20px 40px rgba(0,0,0,0.2);
+    animation: modalSlideIn 0.3s ease-out;
+}
+
+@keyframes modalSlideIn {
+    from {
+        opacity: 0;
+        transform: translateY(-50px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+.modal-title {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 700;
+    color: #1f2937;
+}
+
+.modal-close {
+    background: none;
+    border: none;
+    font-size: 24px;
+    cursor: pointer;
+    color: #6b7280;
+    padding: 0;
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    transition: all 0.2s;
+}
+
+.modal-close:hover {
+    background: #f3f4f6;
+    color: #374151;
+}
+
+.modal-body {
+    padding: 20px;
+}
+
+.modal-form {
+    margin-bottom: 20px;
+}
+
+.modal-field {
+    margin-bottom: 16px;
+}
+
+.modal-field label {
+    display: block;
+    margin-bottom: 6px;
+    font-weight: 600;
+    color: #374151;
+    font-size: 14px;
+}
+
+.modal-field input {
+    width: 100%;
+    padding: 10px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    font-size: 14px;
+    transition: border-color 0.2s;
+}
+
+.modal-field input:focus {
+    outline: none;
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.modal-help {
+    font-size: 12px;
+    color: #6b7280;
+    margin-top: 4px;
+}
+
+.modal-actions {
+    display: flex;
+    gap: 10px;
+    padding: 20px;
+    border-top: 1px solid #e5e7eb;
+    background: #f9fafb;
+}
+
+.modal-btn {
+    padding: 10px 16px;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.modal-btn-primary {
+    background: #3b82f6;
+    color: white;
+}
+
+.modal-btn-primary:hover {
+    background: #2563eb;
+}
+
+.modal-btn-secondary {
+    background: #e5e7eb;
+    color: #374151;
+}
+
+.modal-btn-secondary:hover {
+    background: #d1d5db;
+}
+
+.modal-registrants-list {
+    border-top: 1px solid #e5e7eb;
+    padding: 20px;
+    background: #f9fafb;
+}
+
+.registrant-item {
+    transition: all 0.2s;
+}
+
+.registrant-item:hover {
+    background: #f3f4f6;
+}
+
+.invite-tools {
+    margin-top: 20px;
+}
+
+.ghost-button {
+    background: #f8fafc;
+    border: 2px dashed #cbd5e1;
+    color: #64748b;
+    padding: 12px;
+    border-radius: 8px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.ghost-button:hover {
+    background: #f1f5f9;
+    border-color: #94a3b8;
+    color: #475569;
+}
+
 </style>
 CSS;
 
@@ -707,6 +910,7 @@ renderAppShellStart($conn, [
         <div class="stat"><small>Attended</small><strong><?php echo $attendedCount; ?></strong></div>
         <div class="stat"><small>Venue</small><strong><?php echo h($event['venue_name'] ?: 'Not set'); ?></strong></div>
         <div class="stat"><small>Audience</small><strong><?php echo h($event['target_audience'] ?: 'Open to all'); ?></strong></div>
+        <div class="stat"><small>Scan Radius</small><strong><?php echo !empty($event['max_distance_km']) ? h($event['max_distance_km'] . ' km') : 'No limit'; ?></strong></div>
     </section>
 
     <?php if ($isAdmin): ?>
@@ -717,17 +921,17 @@ renderAppShellStart($conn, [
                     <button type="button" id="toggleSettings" class="edit-button">
                         <span id="toggleText">Edit Settings</span>
                     </button>
-                    <?php if (!$event['deleted']): ?>
-                        <a href="?id=<?php echo $event_id; ?>&delete=<?php echo $event_id; ?>" class="danger delete-header" onclick="return confirm('Are you sure you want to delete this event? Attendance data will be preserved but the event will be hidden from public.')">Delete Event</a>
-                    <?php else: ?>
-                        <span class="badge deleted">Event Deleted</span>
-                    <?php endif; ?>
+                    <form method="POST" style="display:inline;" onsubmit="return confirm('Are you sure you want to delete this event? Attendance data will be preserved but the event will be hidden from public.')">
+                        <?php echo appCsrfInput(); ?>
+                        <button type="submit" name="delete_event" value="<?php echo $event_id; ?>" class="danger delete-header">Delete Event</button>
+                    </form>
                 </div>
             </div>
             <p id="settingsDescription">Adjust event time, attendance window, who should attend, and how people access this event.</p>
 
             <div id="adminSettingsForm" style="display: none;">
                 <form method="POST" class="form-grid">
+                <?php echo appCsrfInput(); ?>
                 <div class="field full">
                     <label for="name">Event Name</label>
                     <input id="name" type="text" name="name" required value="<?php echo h($event['name']); ?>">
@@ -778,6 +982,12 @@ renderAppShellStart($conn, [
                     <input id="venue_location" type="text" name="venue_location" value="<?php echo h($event['venue_location']); ?>">
                 </div>
 
+                <div class="field">
+                    <label for="max_distance_km">Allowed Scan Radius (km)</label>
+                    <input id="max_distance_km" type="number" name="max_distance_km" min="0" step="0.01" value="<?php echo h($event['max_distance_km'] ?? ''); ?>">
+                    <div class="inline-note">Leave empty or 0 to allow scans from any distance.</div>
+                </div>
+
                 <div class="location-tools">
                     <label>Live Location Share</label>
                     <p style="margin-top:8px;">Search the exact event place so attendees can zoom in and follow directions without getting lost.</p>
@@ -811,10 +1021,16 @@ renderAppShellStart($conn, [
                 </div>
 
                 <div class="invite-tools">
-                    <label for="registrant_list">Private Event Registrants</label>
-                    <textarea id="registrant_list" name="registrant_list" placeholder="Amina Yusuf, amina@example.com, 0712345678&#10;John Peter, john@example.com, 0755123456"><?php echo h($registrantListValue); ?></textarea>
-                    <p style="margin-top:10px;">One person per line: Full Name, Email, Phone Number. The system uses this list to pre-register people and send the access code by email.</p>
+                    <label>Private Event Registrants</label>
+                    <div class="inline-note">Add specific people who can register for this private event.</div>
+                    <button type="button" class="ghost-button" id="openRegistrantModal" style="width: 100%; margin-top: 10px;">
+                        + Add Private Registrants
+                    </button>
+                    <div id="registrantCount" class="inline-note" style="margin-top: 8px; display: none;">
+                        <span id="registrantCountText">0</span> registrant(s) added
+                    </div>
                 </div>
+                <input type="hidden" id="registrant_list" name="registrant_list" value="<?php echo h($registrantListValue); ?>">
 
                 <div class="actions">
                     <button type="submit" name="save_settings" class="primary">Save Settings</button>
@@ -824,6 +1040,58 @@ renderAppShellStart($conn, [
                     <?php endif; ?>
                 </div>
             </form>
+    </div>
+
+    <!-- Private Event Registrants Modal -->
+    <div id="registrantModal" class="modal-overlay">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 class="modal-title">Add Private Event Registrants</h3>
+                <button class="modal-close" id="closeModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p>Add specific people who can register for this private event. They will receive the access code via email.</p>
+                
+                <div class="modal-form">
+                    <div class="modal-field">
+                        <label for="modalRegistrantName">Full Name</label>
+                        <input type="text" id="modalRegistrantName" placeholder="Enter registrant full name">
+                        <div class="modal-help">Example: Amina Yusuf</div>
+                    </div>
+                    
+                    <div class="modal-field">
+                        <label for="modalRegistrantEmail">Email Address</label>
+                        <input type="email" id="modalRegistrantEmail" placeholder="Enter email address">
+                        <div class="modal-help">Example: amina@example.com</div>
+                    </div>
+                    
+                    <div class="modal-field">
+                        <label for="modalRegistrantPhone">Phone Number</label>
+                        <input type="tel" id="modalRegistrantPhone" placeholder="Enter phone number">
+                        <div class="modal-help">Example: 0712345678</div>
+                    </div>
+                    
+                    <div class="modal-field">
+                        <label for="modalAccessCode">Access Code (Optional)</label>
+                        <input type="text" id="modalAccessCode" placeholder="Leave blank to auto-generate">
+                        <div class="modal-help">If empty, system will create a unique code automatically</div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button class="modal-btn modal-btn-secondary" id="cancelModal">Cancel</button>
+                <button class="modal-btn modal-btn-secondary" id="addAnotherRegistrant">+ Add Another</button>
+                <button class="modal-btn modal-btn-primary" id="saveRegistrants">Save All Registrants</button>
+            </div>
+            
+            <!-- Current Registrants List -->
+            <div class="modal-registrants-list" id="registrantsList" style="margin-top: 20px; display: none;">
+                <h4 style="margin: 0 0 12px 0; font-size: 16px; color: #374151;">Current Registrants:</h4>
+                <div id="registrantsListContent"></div>
+            </div>
+        </div>
+    </div>
+
         </section>
     <?php endif; ?>
 
@@ -842,14 +1110,24 @@ renderAppShellStart($conn, [
         <div class="actions">
             <?php if (!$isAdmin && !$isRegistered && $registrationMode === 'self'): ?>
                 <form method="POST">
+                    <?php echo appCsrfInput(); ?>
                     <button type="submit" name="join_self" class="primary">Register for Event</button>
                 </form>
             <?php elseif (!$isAdmin && !$isRegistered && $registrationMode === 'code'): ?>
                 <form method="POST" style="display:flex;gap:10px;flex-wrap:wrap;width:100%;margin-top:16px;">
+                    <?php echo appCsrfInput(); ?>
                     <input type="text" name="access_code" placeholder="Enter access code" style="flex:1;min-width:220px;">
                     <button type="submit" name="join_code" class="primary">Access Event</button>
                 </form>
             <?php elseif ($isRegistered || $isAdmin): ?>
+                <?php if ($registrationMode === 'code' && !empty($userAccessCode) && !$isAdmin): ?>
+                    <div class="message success" style="background: #e8f5e9; border: 1px solid #4caf50; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+                        <strong>✅ Your Personal Access Code:</strong><br>
+                        <code style="font-size: 18px; font-weight: bold; color: #2e7d32;"><?php echo h($userAccessCode); ?></code><br>
+                        <small>This code has been sent to your email. Keep it safe!</small>
+                    </div>
+                <?php endif; ?>
+                
                 <?php if ($windowState === 'before'): ?>
                     <div class="message">You have already joined this event. The scan button will appear here at <?php echo h(formatEventTime($event['attendance_start'] ?: $event['time'])); ?>.</div>
                 <?php elseif ($windowState === 'open'): ?>
@@ -1032,6 +1310,166 @@ renderAppShellStart($conn, [
                 settingsDescription.style.display = "block";
             }
         });
+    }
+
+    // Private Event Registrants Modal functionality
+    const openRegistrantModal = document.getElementById("openRegistrantModal");
+    const registrantModal = document.getElementById("registrantModal");
+    const closeModal = document.getElementById("closeModal");
+    const cancelModal = document.getElementById("cancelModal");
+    const saveRegistrants = document.getElementById("saveRegistrants");
+    const addAnotherRegistrant = document.getElementById("addAnotherRegistrant");
+    const registrantsList = document.getElementById("registrantsList");
+    const registrantsListContent = document.getElementById("registrantsListContent");
+    const registrantCount = document.getElementById("registrantCount");
+    const registrantCountText = document.getElementById("registrantCountText");
+    const registrant_list = document.getElementById("registrant_list");
+    
+    let registrants = [];
+    
+    // Load existing registrants if any
+    const existingRegistrants = registrant_list.value;
+    if (existingRegistrants) {
+        try {
+            registrants = JSON.parse(existingRegistrants);
+            updateRegistrantsList();
+        } catch (e) {
+            registrants = [];
+        }
+    }
+    
+    // Open modal
+    if (openRegistrantModal) {
+        openRegistrantModal.addEventListener("click", () => {
+            registrantModal.style.display = "flex";
+        });
+    }
+    
+    // Close modal
+    function closeRegistrantModal() {
+        registrantModal.style.display = "none";
+        clearModalForm();
+    }
+    
+    if (closeModal) closeModal.addEventListener("click", closeRegistrantModal);
+    if (cancelModal) cancelModal.addEventListener("click", closeRegistrantModal);
+    
+    // Close modal when clicking outside
+    registrantModal.addEventListener("click", (e) => {
+        if (e.target === registrantModal) {
+            closeRegistrantModal();
+        }
+    });
+    
+    // Clear form
+    function clearModalForm() {
+        document.getElementById("modalRegistrantName").value = "";
+        document.getElementById("modalRegistrantEmail").value = "";
+        document.getElementById("modalRegistrantPhone").value = "";
+        document.getElementById("modalAccessCode").value = "";
+    }
+    
+    // Add registrant
+    function addRegistrant() {
+        const name = document.getElementById("modalRegistrantName").value.trim();
+        const email = document.getElementById("modalRegistrantEmail").value.trim();
+        const phone = document.getElementById("modalRegistrantPhone").value.trim();
+        const accessCode = document.getElementById("modalAccessCode").value.trim();
+        
+        // Validation
+        if (!name || !email || !phone) {
+            alert("Please fill in name, email, and phone fields.");
+            return false;
+        }
+        
+        // Email validation
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(email)) {
+            alert("Please enter a valid email address.");
+            return false;
+        }
+        
+        // Check for duplicate emails
+        if (registrants.some(r => r.email === email)) {
+            alert("This email is already added.");
+            return false;
+        }
+        
+        // Add registrant
+        registrants.push({
+            name: name,
+            email: email,
+            phone: phone,
+            access_code: accessCode || generateAccessCode()
+        });
+        
+        updateRegistrantsList();
+        clearModalForm();
+        return true;
+    }
+    
+    // Update registrants list display
+    function updateRegistrantsList() {
+        if (registrants.length === 0) {
+            registrantsList.style.display = "none";
+            registrantCount.style.display = "none";
+        } else {
+            registrantsList.style.display = "block";
+            registrantCount.style.display = "block";
+            registrantCountText.textContent = registrants.length;
+            
+            let html = "";
+            registrants.forEach((registrant, index) => {
+                html += `
+                    <div class="registrant-item" style="display: flex; justify-content: space-between; align-items: center; padding: 10px; border: 1px solid #e5e7eb; border-radius: 6px; margin-bottom: 8px;">
+                        <div>
+                            <strong>${registrant.name}</strong><br>
+                            <small>${registrant.email} | ${registrant.phone}</small>
+                            ${registrant.access_code ? `<br><small>Code: <code>${registrant.access_code}</code></small>` : ''}
+                        </div>
+                        <button type="button" onclick="removeRegistrant(${index})" style="background: #ef4444; color: white; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer;">Remove</button>
+                    </div>
+                `;
+            });
+            registrantsListContent.innerHTML = html;
+        }
+        
+        // Update hidden field
+        registrant_list.value = JSON.stringify(registrants);
+    }
+    
+    // Remove registrant
+    window.removeRegistrant = function(index) {
+        registrants.splice(index, 1);
+        updateRegistrantsList();
+    };
+    
+    // Add another registrant
+    if (addAnotherRegistrant) {
+        addAnotherRegistrant.addEventListener("click", () => {
+            if (addRegistrant()) {
+                // Keep modal open for adding more
+            }
+        });
+    }
+    
+    // Save all registrants
+    if (saveRegistrants) {
+        saveRegistrants.addEventListener("click", () => {
+            if (addRegistrant()) {
+                closeRegistrantModal();
+            }
+        });
+    }
+    
+    // Generate access code function (if not already defined)
+    function generateAccessCode() {
+        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+        let code = '';
+        for (let i = 0; i < 8; i++) {
+            code += chars.charAt(Math.floor(Math.random() * chars.length));
+        }
+        return code;
     }
 })();
 </script>

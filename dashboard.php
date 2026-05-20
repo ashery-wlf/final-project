@@ -150,7 +150,7 @@ $pageCss = <<<'CSS'
     display:flex;
     align-items:flex-start;
     gap:14px;
-    box-shadow:0 10px 24px rgba(15, 23, 42, 0.05);
+    box-shadow:0 10px 24px rgba(42, 15, 15, 0.05);
 }
 
 .stat-icon{
@@ -204,7 +204,7 @@ $pageCss = <<<'CSS'
     border:1px solid #e7ecf5;
     border-radius:22px;
     padding:18px;
-    box-shadow:0 12px 30px rgba(15, 23, 42, 0.06);
+    box-shadow:0 12px 30px rgba(42, 15, 15, 0.06);
 }
 
 .visuals-grid{
@@ -219,7 +219,7 @@ $pageCss = <<<'CSS'
     border:1px solid #e7ecf5;
     border-radius:22px;
     padding:18px;
-    box-shadow:0 12px 30px rgba(15, 23, 42, 0.06);
+    box-shadow:0 12px 30px rgba(42, 15, 15, 0.06);
 }
 
 .viz-card h3{
@@ -347,7 +347,7 @@ $pageCss = <<<'CSS'
     width:100%;
     border-radius:14px 14px 10px 10px;
     min-height:20px;
-    box-shadow:0 12px 20px rgba(37, 99, 235, 0.16);
+    box-shadow:0 12px 20px rgba(235, 37, 37, 0.16);
 }
 
 .bar-label{
@@ -578,7 +578,7 @@ $pageCss = <<<'CSS'
     height:42px;
     border-radius:12px;
     padding:0 18px;
-    background:linear-gradient(180deg, #5b4df7 0%, #4b39e6 100%);
+    background:linear-gradient(180deg, #3b0808 0%, #301b1b 100%);
     color:#fff;
     font-weight:800;
 }

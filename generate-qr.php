@@ -7,7 +7,7 @@ ensureEventSchema($conn);
 
 $user_id = (int) $_SESSION['user_id'];
 $event_id = isset($_GET['id']) ? (int) $_GET['id'] : 0;
-$event = $conn->query("SELECT * FROM events WHERE id=$event_id LIMIT 1")->fetch_assoc();
+$event = $conn->query("SELECT * FROM events WHERE id=$event_id AND deleted = FALSE LIMIT 1")->fetch_assoc();
 
 if (!$event) {
     die("Event not found.");
